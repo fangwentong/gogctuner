@@ -1,0 +1,37 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Go
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+
+  test:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ ubuntu-20.04, ubuntu-22.04, windows-latest,  macos-latest ]
+        go: [ '1.12', '1.16', '1.18', '1.19', '1.21' ]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: ${{ matrix.go }}
+
+      - name: unittest
+        run: go test -v --tags=nobench ./...
+
+      - name: Benchmark
+        run: go test -v -run Bench
+
+      - name: Profiling
+        run: echo "adaptive pprof"; go tool pprof -text adaptive_cpu.pprof; echo "default pprof"; go tool pprof -text default_cpu.pprof;

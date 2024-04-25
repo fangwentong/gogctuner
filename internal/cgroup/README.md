@@ -1,0 +1,1 @@
+Copied from https://github.com/VictoriaMetrics/VictoriaMetrics/tree/master/lib/cgroup

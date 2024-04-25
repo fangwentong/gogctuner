@@ -1,101 +1,143 @@
 package gogctuner
 
 import (
-	"io/ioutil"
+	"errors"
+	"fmt"
+	"github.com/fangwentong/gogctuner/internal/memory"
 	"math"
 	"os"
+	"reflect"
+	"runtime/debug"
 	"strconv"
-	"strings"
-
-	mem_util "github.com/shirou/gopsutil/mem"
-	"github.com/shirou/gopsutil/process"
 )
 
-const cgroupMemLimitPath = "/sys/fs/cgroup/memory/memory.limit_in_bytes"
+const (
+	maxRAMUsagePercentage = 95
+	minGOGCValue          = 50
+	minHeapSize           = 4 << 20 // 4MB
+)
 
-var memoryLimitInPercent float64 = 100 // default no limit
-
-// copied from https://github.com/containerd/cgroups/blob/318312a373405e5e91134d8063d04d59768a1bff/utils.go#L251
-func parseUint(s string, base, bitSize int) (uint64, error) {
-	v, err := strconv.ParseUint(s, base, bitSize)
-	if err != nil {
-		intValue, intErr := strconv.ParseInt(s, base, bitSize)
-		// 1. Handle negative values greater than MinInt64 (and)
-		// 2. Handle negative values lesser than MinInt64
-		if intErr == nil && intValue < 0 {
-			return 0, nil
-		} else if intErr != nil &&
-			intErr.(*strconv.NumError).Err == strconv.ErrRange &&
-			intValue < 0 {
-			return 0, nil
-		}
-		return 0, err
+// setGCParameter sets GC parameters
+func adjustGOGCByMemoryLimit(oldConfig, newConfig Config, logger Logger) {
+	if newConfig.MaxRAMPercentage > 0 {
+		// If MaxRAMPercentage is set, adjust GOGC based on the current heap size and the target memory limit
+		getCurrentPercentAndChangeGOGC(newConfig.MaxRAMPercentage, logger)
+		return
 	}
-	return v, nil
+	if reflect.DeepEqual(oldConfig, newConfig) {
+		return
+	}
+	// If MaxRAMPercentage is not set, set a static GOGC
+	setGOGCOrDefault(newConfig.GOGC, logger)
 }
 
-// copied from https://github.com/containerd/cgroups/blob/318312a373405e5e91134d8063d04d59768a1bff/utils.go#L243
-func readUint(path string) (uint64, error) {
-	v, err := ioutil.ReadFile(path)
-	if err != nil {
-		return 0, err
+func setGOGCOrDefault(gogc int, logger Logger) {
+	if gogc != 0 {
+		logger.Logf("gctuner: SetGCPercent %v", gogc)
+		debug.SetGCPercent(gogc)
+		return
 	}
-	return parseUint(strings.TrimSpace(string(v)), 10, 64)
+
+	// Reset GOGC to its default value
+	defaultGOGC := readGOGC()
+	logger.Logf("gctuner: SetGCPercent to default: %v", defaultGOGC)
+	debug.SetGCPercent(defaultGOGC)
 }
 
-func getUsageCGroup() (float64, error) {
-	p, err := process.NewProcess(int32(os.Getpid()))
-	if err != nil {
-		return 0, err
+// readGOGC reads the GOGC value
+// Copied from runtime.readGOGC
+func readGOGC() int {
+	p := os.Getenv("GOGC")
+	if p == "off" {
+		return -1
 	}
-
-	mem, err := p.MemoryInfo()
-	if err != nil {
-		return 0, err
+	if n, err := strconv.Atoi(p); err == nil {
+		return n
 	}
-
-	memLimit, err := getCGroupMemoryLimit()
-	if err != nil {
-		return 0, err
-	}
-	// mem.RSS / cgroup limit in bytes
-	memPercent := float64(mem.RSS) * 100 / float64(memLimit)
-
-	return memPercent, nil
+	return 100
 }
 
-func getCGroupMemoryLimit() (uint64, error) {
-	usage, err := readUint(cgroupMemLimitPath)
+func getCurrentPercentAndChangeGOGC(memoryLimitInPercent float64, logger Logger) {
+	totalMemSize, err := getMemoryLimit()
 	if err != nil {
-		return 0, err
+		logger.Errorf("gctuner: failed to adjust GC err: %v", err.Error())
+		return
 	}
-	machineMemory, err := mem_util.VirtualMemory()
-	if err != nil {
-		return 0, err
+
+	liveHeapSize := memory.GetLiveDatasetSize()
+
+	liveSize := math.Max(minHeapSize, float64(liveHeapSize))
+	newgogc := getGOGC(memoryLimitInPercent, totalMemSize, liveSize)
+
+	logger.Logf("gctuner: limit %.2f%% (%s). adjusting GOGC to %d, live+unmarked %s",
+		memoryLimitInPercent, printMemorySize(uint64(memoryLimitInPercent/100*float64(totalMemSize))),
+		newgogc, printMemorySize(liveHeapSize))
+	debug.SetGCPercent(newgogc)
+}
+
+func getGOGC(memoryLimitInPercent float64, totalMemSize uint64, liveSize float64) int {
+	// hard_target = live_dataset + live_dataset * (GOGC / 100).
+	// hard_target = memoryLimitInPercent
+	// live_dataset = memPercent
+	// Therefore, gogc = (hard_target - live_dataset) / live_dataset * 100
+	newgogc := calculateGOGC(memoryLimitInPercent, totalMemSize, liveSize)
+
+	if newgogc > 0 {
+		return int(math.Max(newgogc, minGOGCValue))
 	}
-	limit := uint64(math.Min(float64(usage), float64(machineMemory.Total)))
+
+	// If the current memory usage has already exceeded the target threshold, it is impossible to reach the target threshold no matter how GOGC is set
+	// When setting the GOGC value, it is necessary to consider constraints such as GC overhead and memory limits, and within these constraints, a smaller GOGC value should be set
+	// Considering GC overhead, it is not advisable to set a too low GOGC value, otherwise, the GC overhead will be high. We set a relatively low GOGC value as a safety net (minGOGCValue = 50)
+	// Considering memory limits, if the maximum allowed memory percentage is maxMemPercent, then the upper limit for GOGC is (maxMemPercent - currentMemPercent) / memPercent * 100.0
+	// Without considering the use of swap memory, the upper limit for maxMemPercent is 100%. If the out-of-memory killer is enabled, maxMemPercent should be reduced appropriately, such as 95%
+	defaultGOGC := readGOGC()
+	maxGOGC := calculateGOGC(maxRAMUsagePercentage, totalMemSize, liveSize)
+
+	return int(math.Max(minGOGCValue, math.Min(float64(defaultGOGC), maxGOGC)))
+}
+
+func calculateGOGC(memoryLimitInPercent float64, memTotal uint64, liveSize float64) float64 {
+	target := memoryLimitInPercent * float64(memTotal) / 100
+	return (target - liveSize) / liveSize * 100.0
+}
+
+func getMemoryLimit() (uint64, error) {
+	limit := memory.GetMemoryLimit()
+	if limit == 0 {
+		return 0, errors.New("gctuner: failed to get memory limit")
+	}
 	return limit, nil
 }
 
-// return cpu percent, mem in MB, goroutine num
-// not use cgroup ver.
-func getUsageNormal() (float64, error) {
-	p, err := process.NewProcess(int32(os.Getpid()))
-	if err != nil {
-		return 0, err
+// printMemorySize prints memory size in a readable format
+func printMemorySize(bytes uint64) string {
+	if bytes == uint64(math.MaxInt64) {
+		return "unlimited"
+	}
+	const (
+		KB = 1 << 10
+		MB = 1 << 20
+		GB = 1 << 30
+	)
+
+	var unit string
+	var value float64
+
+	switch {
+	case bytes < KB:
+		unit = "B"
+		value = float64(bytes)
+	case bytes < MB:
+		unit = "KB"
+		value = float64(bytes) / KB
+	case bytes < GB:
+		unit = "MB"
+		value = float64(bytes) / MB
+	default:
+		unit = "GB"
+		value = float64(bytes) / GB
 	}
 
-	mem, err := p.MemoryPercent()
-	if err != nil {
-		return 0, err
-	}
-
-	return float64(mem), nil
-}
-
-var getUsage func() (float64, error)
-
-// GetPreviousGOGC collect GOGC
-func GetPreviousGOGC() int {
-	return previousGOGC
+	return fmt.Sprintf("%.2f%s", value, unit)
 }
