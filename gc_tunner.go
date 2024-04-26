@@ -162,10 +162,10 @@ func (a *adaptiveGCHandler) watchConfigUpdate() {
 		newVal, _ := a.configurator.GetConfig()
 		oldVal, _ := a.prevConfig.Load().(Config)
 		if reflect.DeepEqual(newVal, oldVal) {
-			// The config has not changed
+			// The config has no change
 			continue
 		}
-		// The config has changed
+		// The config has been changed
 		select {
 		case a.ch <- struct{}{}:
 		default:

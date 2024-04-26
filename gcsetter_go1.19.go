@@ -13,12 +13,12 @@ import (
 // setGCParameter sets the GC parameters
 func setGCParameter(oldConfig, newConfig Config, logger Logger) {
 	if reflect.DeepEqual(oldConfig, newConfig) {
-		// The config has not changed
+		// The config has no change
 		return
 	}
 	if newConfig.MaxRAMPercentage > 0 {
 		if oldConfig.MaxRAMPercentage == newConfig.MaxRAMPercentage {
-			// The memory limit has not changed
+			// The memory limit has not been changed
 			return
 		}
 		memLimit, err := getMemoryLimit()
@@ -34,13 +34,15 @@ func setGCParameter(oldConfig, newConfig Config, logger Logger) {
 	}
 
 	if oldConfig.MaxRAMPercentage != 0 {
-		// The config has changed, reset the memory limit
+		// The config has been changed, reset the memory limit and GOGC
 		defaultMemLimit := readGOMEMLIMIT(logger)
 		if defaultMemLimit != 0 {
 			logger.Logf("gctuner: reset memory limit %v", printMemorySize(uint64(defaultMemLimit)))
 			debug.SetMemoryLimit(defaultMemLimit)
-			return
 		}
+		// reset GOGC
+		setGOGCOrDefault(newConfig.GOGC, logger)
+		return
 	}
 
 	// Set the GOGC value
@@ -58,8 +60,10 @@ func readGOMEMLIMIT(logger Logger) int64 {
 	}
 	n, ok := parseByteCount(p)
 	if !ok {
+		// shouldn't be here, the `runtime.readGOMEMLIMIT` would exit the process in advance
 		logger.Errorf("GOMEMLIMIT=", p, "\n")
 		logger.Errorf("malformed GOMEMLIMIT; see `go doc runtime/debug.SetMemoryLimit`")
+		return math.MaxInt64
 	}
 	return n
 }
