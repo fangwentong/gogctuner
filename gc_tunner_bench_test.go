@@ -35,7 +35,7 @@ func TestBenchGcTuner(t *testing.T) {
 	enableProfiler := true
 	defaultRounds := doBench("default", t, enableProfiler)
 	// enable adaptive gc
-	configurator := newConfigSupplier()
+	configurator := NewGcConfigurator()
 	configurator.SetConfig(Config{MaxRAMPercentage: 10})
 
 	_ = EnableGCTuner(WithConfigurator(configurator))
@@ -109,33 +109,4 @@ func gcInfoPrinter(f *ref) {
 	debug.ReadGCStats(stats)
 	log.Printf("gc triggered at %v, %d GCs, pause %v", stats.LastGC, stats.NumGC, stats.Pause[0])
 	runtime.SetFinalizer(f, gcInfoPrinter)
-}
-
-func newConfigSupplier() *configSupplier {
-	supplier := &configSupplier{
-		ch: make(chan interface{}),
-	}
-	return supplier
-}
-
-type configSupplier struct {
-	config atomic.Value
-	ch     chan interface{}
-}
-
-func (c *configSupplier) Updates() <-chan interface{} {
-	return c.ch
-}
-
-func (c *configSupplier) GetConfig() (Config, error) {
-	config, _ := c.config.Load().(Config)
-	return config, nil
-}
-
-func (c *configSupplier) SetConfig(config Config) {
-	c.config.Store(config)
-	select {
-	case c.ch <- struct{}{}: // notify the config change
-	default:
-	}
 }

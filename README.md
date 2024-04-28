@@ -49,51 +49,23 @@ package main
 
 import (
 	"github.com/fangwentong/gogctuner"
-	"sync/atomic"
 )
 
 func main() {
-	configurator := newConfigurator()
+	configurator := gogctuner.NewGcConfigurator()
 
 	// Integrate with your dynamic config implementation here:
-	// conf := readFromYourConfigCenter("some_config_key")
-	// configurator.Set(conf)
-	// registerConfigUpdateCallback("some_config_key", func(conf *gogctuner.Config) {
-	//     configurator.Set(conf)
-	// })
+	conf := readFromYourConfigCenter("some_config_key")
+	configurator.SetConfig(conf)
+	registerConfigUpdateCallback("some_config_key", func(conf gogctuner.Config) {
+	    configurator.SetConfig(conf)
+	})
 
 	gogctuner.EnableGCTuner(
 		gogctuner.WithConfigurator(configurator),
 	)
 }
 
-func newConfigurator() *exampleDynamicConfigurator {
-	return &exampleDynamicConfigurator{
-		updateCh: make(chan interface{}, 1),
-	}
-}
-
-type exampleDynamicConfigurator struct {
-	conf     atomic.Value
-	updateCh chan interface{}
-}
-
-func (e *exampleDynamicConfigurator) GetConfig() (gogctuner.Config, error) {
-	val, _ := e.conf.Load().(gogctuner.Config)
-	return val, nil
-}
-
-func (e *exampleDynamicConfigurator) Updates() <-chan interface{} {
-	return e.updateCh
-}
-
-func (e *exampleDynamicConfigurator) Set(conf gogctuner.Config) {
-	e.conf.Store(conf)
-	select {
-	case e.updateCh <- struct{}{}: // Notify the config change
-	default:
-	}
-}
 ```
 
 ### Reference
