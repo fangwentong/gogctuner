@@ -30,8 +30,8 @@ func (g *gcConfigurator) SetConfig(value Config) {
 
 	select {
 	case g.configUpdateCh <- struct{}{}:
-		log.Printf("gctuner: gc config update event dispatched, config: %v", value)
+		log.Printf("gctuner: gc config update event dispatched, config: %+v", value)
 	default:
-		log.Printf("gctuner: gc config update event is dropped due to previous task not done, config: %v", value)
+		log.Printf("gctuner: gc config update event is dropped due to previous task not done, config: %+v", value)
 	}
 }

@@ -30,14 +30,16 @@ Use static configuration by setting the `MaxRAMPercentage` at the initialization
 package main
 
 import (
-	"github.com/fangwentong/gogctuner"
+  "github.com/fangwentong/gogctuner"
 )
 
 func main() {
-	gogctuner.EnableGCTuner(
-		gogctuner.WithStaticConfig(gogctuner.Config{MaxRAMPercentage: 90}),
-	)
+  gogctuner.EnableGCTuner(
+    gogctuner.WithStaticConfig(gogctuner.Config{MaxRAMPercentage: 90}),
+  )
+  // Your application code here
 }
+
 ```
 
 ### Dynamic Configuration
@@ -48,22 +50,24 @@ For dynamic configuration that allows runtime updates, you can use a configurato
 package main
 
 import (
-	"github.com/fangwentong/gogctuner"
+  "github.com/fangwentong/gogctuner"
 )
 
 func main() {
-	configurator := gogctuner.NewGcConfigurator()
+  configurator := gogctuner.NewGcConfigurator()
 
-	// Integrate with your dynamic config implementation here:
-	conf := readFromYourConfigCenter("some_config_key")
-	configurator.SetConfig(conf)
-	registerConfigUpdateCallback("some_config_key", func(conf gogctuner.Config) {
-	    configurator.SetConfig(conf)
-	})
+  // Integrate with your dynamic config implementation here:
+  conf := readFromYourConfigCenter("your_config_key")
+  configurator.SetConfig(conf) // set initial config
+  // register config updates callback
+  registerConfigUpdateCallback("your_config_key", func(conf gogctuner.Config) {
+    configurator.SetConfig(conf)
+  })
 
-	gogctuner.EnableGCTuner(
-		gogctuner.WithConfigurator(configurator),
-	)
+  gogctuner.EnableGCTuner(
+    gogctuner.WithConfigurator(configurator),
+  )
+  // Your application code here
 }
 
 ```
@@ -78,5 +82,5 @@ func main() {
 
 ### License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License, see the [LICENSE](LICENSE) file for details.
 
