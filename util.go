@@ -15,13 +15,18 @@ const (
 	maxRAMUsagePercentage = 95
 	minGOGCValue          = 50
 	minHeapSize           = 4 << 20 // 4MB
+	goGCNoLimit           = float64(math.MaxInt64)
 )
 
 // setGCParameter sets GC parameters
 func adjustGOGCByMemoryLimit(oldConfig, newConfig Config, logger Logger) {
 	if newConfig.MaxRAMPercentage > 0 {
 		// If MaxRAMPercentage is set, adjust GOGC based on the current heap size and the target memory limit
-		getCurrentPercentAndChangeGOGC(newConfig.MaxRAMPercentage, logger)
+		maxGOGC := goGCNoLimit
+		if newConfig.GOGC > 0 {
+			maxGOGC = float64(newConfig.GOGC)
+		}
+		getCurrentPercentAndChangeGOGC(newConfig.MaxRAMPercentage, maxGOGC, logger)
 		return
 	}
 	if reflect.DeepEqual(oldConfig, newConfig) {
@@ -57,17 +62,17 @@ func readGOGC() int {
 	return 100
 }
 
-func getCurrentPercentAndChangeGOGC(memoryLimitInPercent float64, logger Logger) {
+func getCurrentPercentAndChangeGOGC(memoryLimitInPercent float64, maxGOGC float64, logger Logger) {
 	totalMemSize, err := getMemoryLimit()
 	if err != nil {
-		logger.Errorf("gctuner: failed to adjust GC err: %v", err.Error())
+		logger.Errorf("gctuner: failed to adjust GC, get memory limit err: %v", err.Error())
 		return
 	}
 
 	liveHeapSize := memory.GetLiveDatasetSize()
 
 	liveSize := math.Max(minHeapSize, float64(liveHeapSize))
-	newgogc := getGOGC(memoryLimitInPercent, totalMemSize, liveSize)
+	newgogc := getGOGC(memoryLimitInPercent, totalMemSize, liveSize, maxGOGC)
 
 	logger.Logf("gctuner: limit %.2f%% (%s). adjusting GOGC to %d, live+unmarked %s",
 		memoryLimitInPercent, printMemorySize(uint64(memoryLimitInPercent/100*float64(totalMemSize))),
@@ -75,7 +80,7 @@ func getCurrentPercentAndChangeGOGC(memoryLimitInPercent float64, logger Logger)
 	debug.SetGCPercent(newgogc)
 }
 
-func getGOGC(memoryLimitInPercent float64, totalMemSize uint64, liveSize float64) int {
+func getGOGC(memoryLimitInPercent float64, totalMemSize uint64, liveSize float64, maxGOGC float64) int {
 	// hard_target = live_dataset + live_dataset * (GOGC / 100).
 	// hard_target = memoryLimitInPercent
 	// live_dataset = memPercent
@@ -83,7 +88,7 @@ func getGOGC(memoryLimitInPercent float64, totalMemSize uint64, liveSize float64
 	newgogc := calculateGOGC(memoryLimitInPercent, totalMemSize, liveSize)
 
 	if newgogc > 0 {
-		return int(math.Max(newgogc, minGOGCValue))
+		return int(math.Min(math.Max(newgogc, minGOGCValue), maxGOGC))
 	}
 
 	// If the current memory usage has already exceeded the target threshold, it is impossible to reach the target threshold no matter how GOGC is set
@@ -92,7 +97,7 @@ func getGOGC(memoryLimitInPercent float64, totalMemSize uint64, liveSize float64
 	// Considering memory limits, if the maximum allowed memory percentage is maxMemPercent, then the upper limit for GOGC is (maxMemPercent - currentMemPercent) / memPercent * 100.0
 	// Without considering the use of swap memory, the upper limit for maxMemPercent is 100%. If the out-of-memory killer is enabled, maxMemPercent should be reduced appropriately, such as 95%
 	defaultGOGC := readGOGC()
-	maxGOGC := calculateGOGC(maxRAMUsagePercentage, totalMemSize, liveSize)
+	maxGOGC = math.Min(maxGOGC, calculateGOGC(maxRAMUsagePercentage, totalMemSize, liveSize))
 
 	return int(math.Max(minGOGCValue, math.Min(float64(defaultGOGC), maxGOGC)))
 }

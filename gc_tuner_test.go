@@ -41,7 +41,7 @@ func TestGetGOGCBasics(t *testing.T) {
 		},
 	}
 	for i, _ := range cases {
-		result := getGOGC(cases[i].MemoryLimitInPercent, cases[i].TotalSize, cases[i].LiveSize)
+		result := getGOGC(cases[i].MemoryLimitInPercent, cases[i].TotalSize, cases[i].LiveSize, goGCNoLimit)
 		if result != cases[i].ExpectedGOGC {
 			t.Errorf("Failed Test Case #%v - Expected: %v Found: %v", i+1, cases[i].ExpectedGOGC, result)
 		}
