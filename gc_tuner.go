@@ -19,11 +19,13 @@ var (
 type (
 	// Config is the configuration for adaptive GC
 	Config struct {
-		// GOGC is the target GOGC value if specified,
-		// It is effective when MaxRAMPercentage == 0,
-		// the default value is the value read from the `GOGC` environment variable,
-		// or 100 if the `GOGC` environment variable is not set.
-		// See debug.SetGCPercent(GOGC)
+		// GOGC is the maximum effective GOGC if specified.
+		// When MaxRAMPercentage == 0, the GOGC pararameter will be set to debug.SetGCPercent.
+		// If MaxRAMPercentage is set, in go1.18 and lower, gctuner dynamically adjusts GOGC(debug.SetGCPercent)
+		// to meet the target memory limit, the GOGC specified here limits the maximum GOGC value.
+		// In go1.19 and above, gctuner uses GOMEMLIMIT (debug.SetMemoryLimit) to meet target memory limit,
+		// if GOGC is specified here, memory will be controlled by both GOGC and GOMEMLIMIT, triggering either of them will trigger GC.
+		// In general, it is recommended that the user directly use MaxRAMPercentage without setting the GOGC parameter here.
 		GOGC int `json:"gogc,omitempty" yaml:"gogc,omitempty"`
 
 		// MaxRAMPercentage is the maximum memory usage, range (0, 100]

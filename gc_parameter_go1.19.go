@@ -17,17 +17,17 @@ func setGCParameter(oldConfig, newConfig Config, logger Logger) {
 		return
 	}
 	if newConfig.MaxRAMPercentage > 0 {
-		if oldConfig.MaxRAMPercentage == newConfig.MaxRAMPercentage {
-			// The memory limit has not been changed
-			return
-		}
 		memLimit, err := getMemoryLimit()
 		if err != nil {
 			logger.Errorf("gctuner: failed to adjust GC, get memory limit err: %v", err.Error())
 			return
 		}
 		limit := int64(newConfig.MaxRAMPercentage / 100.0 * float64(memLimit))
-		debug.SetGCPercent(-1) // Disable GC unless the memory limit is reached
+		gogc := newConfig.GOGC
+		if gogc == 0 { // gogc is not set
+			gogc = -1 // Disable GC unless the memory limit is reached
+		}
+		debug.SetGCPercent(gogc)
 		debug.SetMemoryLimit(limit)
 		logger.Logf("gctuner: set memory limit %v", printMemorySize(uint64(limit)))
 		return
