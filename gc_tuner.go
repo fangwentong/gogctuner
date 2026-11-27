@@ -136,7 +136,6 @@ func (a *adaptiveGCHandler) Start() {
 func (a *adaptiveGCHandler) installGCHook() {
 	var r = &ref{}
 	runtime.SetFinalizer(r, a.registerNextGCHook)
-	r = nil
 }
 
 func (a *adaptiveGCHandler) checkAndSetNextGCConfig() {
@@ -203,7 +202,7 @@ func (a *adaptiveGCHandler) registerNextGCHook(f *ref) {
 }
 
 type ref struct {
-	holder []byte
+	_ []byte
 }
 
 type stdLogger struct{}

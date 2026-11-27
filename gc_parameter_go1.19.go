@@ -61,7 +61,7 @@ func readGOMEMLIMIT(logger Logger) int64 {
 	n, ok := parseByteCount(p)
 	if !ok {
 		// shouldn't be here, the `runtime.readGOMEMLIMIT` would exit the process in advance
-		logger.Errorf("GOMEMLIMIT=", p, "\n")
+		logger.Errorf("GOMEMLIMIT=%s", p)
 		logger.Errorf("malformed GOMEMLIMIT; see `go doc runtime/debug.SetMemoryLimit`")
 		return math.MaxInt64
 	}

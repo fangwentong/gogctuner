@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
 	"sync/atomic"
@@ -96,17 +95,4 @@ func doBench(tag string, t *testing.T, enableProfiler bool) uint64 {
 		stats.NumGC-beforeStats.NumGC, stats.PauseTotal-beforeStats.PauseTotal)
 	log.Printf("====================")
 	return atomic.LoadUint64(&i)
-}
-
-func installGCHook() {
-	var f = &ref{}
-	runtime.SetFinalizer(f, gcInfoPrinter)
-	f = nil
-}
-
-func gcInfoPrinter(f *ref) {
-	stats := &debug.GCStats{}
-	debug.ReadGCStats(stats)
-	log.Printf("gc triggered at %v, %d GCs, pause %v", stats.LastGC, stats.NumGC, stats.Pause[0])
-	runtime.SetFinalizer(f, gcInfoPrinter)
 }

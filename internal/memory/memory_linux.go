@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"fmt"
 	"github.com/fangwentong/gogctuner/internal/cgroup"
 	"github.com/pbnjay/memory"
 )
@@ -9,7 +8,7 @@ import (
 func sysTotalMemory() uint64 {
 	totalMem := memory.TotalMemory()
 	if totalMem == 0 {
-		panic(fmt.Sprintf("FATAL: cannot determine system memory"))
+		panic("FATAL: cannot determine system memory")
 	}
 	mem := cgroup.GetMemoryLimit()
 	if mem <= 0 || int64(int(mem)) != mem || uint64(mem) > totalMem {
