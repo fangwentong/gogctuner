@@ -1,37 +1,34 @@
 package gogctuner
 
-import (
-	"log"
-	"sync/atomic"
-)
+import "sync/atomic"
 
-func NewGcConfigurator() *gcConfigurator {
-	return &gcConfigurator{
-		configUpdateCh: make(chan interface{}, 1),
-	}
-}
-
-type gcConfigurator struct {
+// GcConfigurator is a thread-safe dynamic Configurator implementation.
+type GcConfigurator struct {
 	config         atomic.Value
 	configUpdateCh chan interface{}
 }
 
-func (g *gcConfigurator) GetConfig() (Config, error) {
+// NewGcConfigurator creates a new GcConfigurator for dynamic GC config updates.
+func NewGcConfigurator() *GcConfigurator {
+	return &GcConfigurator{
+		configUpdateCh: make(chan interface{}, 1),
+	}
+}
+
+func (g *GcConfigurator) GetConfig() (Config, error) {
 	c, _ := g.config.Load().(Config)
 	return c, nil
 }
 
-func (g *gcConfigurator) Updates() <-chan interface{} {
+func (g *GcConfigurator) Updates() <-chan interface{} {
 	return g.configUpdateCh
 }
 
-func (g *gcConfigurator) SetConfig(value Config) {
+func (g *GcConfigurator) SetConfig(value Config) {
 	g.config.Store(value)
 
 	select {
 	case g.configUpdateCh <- struct{}{}:
-		log.Printf("gctuner: gc config update event dispatched, config: %+v", value)
 	default:
-		log.Printf("gctuner: gc config update event is dropped due to previous task not done, config: %+v", value)
 	}
 }

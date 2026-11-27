@@ -1,8 +1,10 @@
 package gogctuner
 
 import (
+	"context"
 	"fmt"
 	"log"
+	"os"
 	"reflect"
 	"runtime"
 	"runtime/debug"
@@ -17,29 +19,32 @@ var (
 )
 
 type (
-	// Config is the configuration for adaptive GC
+	// Config is the configuration for adaptive GC.
 	Config struct {
-		// GOGC is the maximum effective GOGC if specified.
-		// When MaxRAMPercentage == 0, the GOGC pararameter will be set to debug.SetGCPercent.
-		// If MaxRAMPercentage is set, in go1.18 and lower, gctuner dynamically adjusts GOGC(debug.SetGCPercent)
-		// to meet the target memory limit, the GOGC specified here limits the maximum GOGC value.
-		// In go1.19 and above, gctuner uses GOMEMLIMIT (debug.SetMemoryLimit) to meet target memory limit,
-		// if GOGC is specified here, memory will be controlled by both GOGC and GOMEMLIMIT, triggering either of them will trigger GC.
-		// In general, it is recommended that the user directly use MaxRAMPercentage without setting the GOGC parameter here.
+		// GOGC configures the Go runtime GC target percentage.
+		// When MaxRAMPercentage == 0:
+		//   - GOGC == 0 resets GOGC to the process default (from the GOGC env var, or 100).
+		//   - GOGC < 0 disables percentage-based GC (GOGC=off).
+		//   - GOGC > 0 sets debug.SetGCPercent(GOGC).
+		// When MaxRAMPercentage > 0:
+		//   - GOGC == 0 is treated as "not specified" and sets GOGC=-1 so GC is driven
+		//     by GOMEMLIMIT alone.
+		//   - GOGC != 0 applies both debug.SetGCPercent(GOGC) and debug.SetMemoryLimit.
 		GOGC int `json:"gogc,omitempty" yaml:"gogc,omitempty"`
 
-		// MaxRAMPercentage is the maximum memory usage, range (0, 100]
+		// MaxRAMPercentage is the target soft memory limit as a percentage of container/host RAM, in [0, 100].
+		// Values above 80-90% are generally discouraged in containers because non-Go-heap memory
+		// (cgo, mmap, runtime overhead) still counts toward the container memory limit.
 		MaxRAMPercentage float64 `json:"max_ram_percentage,omitempty" yaml:"max_ram_percentage,omitempty"`
 	}
 
-	// Configurator is an interface for configuration management
+	// Configurator is an interface for configuration management.
 	Configurator interface {
-		// GetConfig retrieves the gctuner Config
+		// GetConfig retrieves the latest gctuner Config.
 		GetConfig() (Config, error)
 
-		// Updates is the channel of config update events, which will be triggered upon config updates.
-		// It returns nil if the configurator does not support config updates.
-		// The gctuner will obtain the latest config by calling GetConfig.
+		// Updates is the channel of config update events, triggered upon config updates.
+		// It returns nil if the configurator does not support dynamic updates.
 		Updates() <-chan interface{}
 	}
 
@@ -48,6 +53,23 @@ type (
 		Errorf(format string, v ...interface{})
 	}
 )
+
+// runtimeHooks abstracts runtime/OS interactions for unit testing without widening the public API.
+type runtimeHooks struct {
+	setGCPercent   func(int) int
+	setMemoryLimit func(int64) int64
+	getMemoryLimit func() (uint64, error)
+	getEnv         func(string) string
+}
+
+func defaultRuntimeHooks() runtimeHooks {
+	return runtimeHooks{
+		setGCPercent:   debug.SetGCPercent,
+		setMemoryLimit: debug.SetMemoryLimit,
+		getMemoryLimit: getMemoryLimit,
+		getEnv:         os.Getenv,
+	}
+}
 
 func EnableGCTuner(options ...Option) error {
 	initOnce.Do(func() {
@@ -63,7 +85,7 @@ type opts struct {
 
 type Option func(*opts)
 
-// WithConfigurator sets the configurator for gctuner
+// WithConfigurator sets the configurator for gctuner.
 func WithConfigurator(configurator Configurator) Option {
 	return func(o *opts) {
 		o.configurator = configurator
@@ -77,7 +99,7 @@ func WithStaticConfig(config Config) Option {
 	}
 }
 
-// WithLogger sets the logger for gctuner, if not specified, a stdout logger is used by default.
+// WithLogger sets the logger for gctuner; if not specified, a stdlib log logger is used.
 func WithLogger(logger Logger) Option {
 	return func(o *opts) {
 		o.logger = logger
@@ -89,12 +111,20 @@ func (c *Config) CheckValid() error {
 		return nil
 	}
 	if c.MaxRAMPercentage < 0 || c.MaxRAMPercentage > 100 {
-		return fmt.Errorf("invalid max_ram_percentage value: %f, expected range (0, 100]", c.MaxRAMPercentage)
+		return fmt.Errorf("invalid max_ram_percentage value: %f, expected range [0, 100]", c.MaxRAMPercentage)
 	}
 	return nil
 }
 
 func doInit(options ...Option) error {
+	h, err := newAdaptiveGCHandler(defaultRuntimeHooks(), options...)
+	if err != nil {
+		return err
+	}
+	return h.Start()
+}
+
+func newAdaptiveGCHandler(hooks runtimeHooks, options ...Option) (*adaptiveGCHandler, error) {
 	o := &opts{}
 	for _, opt := range options {
 		opt(o)
@@ -106,52 +136,83 @@ func doInit(options ...Option) error {
 
 	if o.configurator == nil {
 		o.logger.Errorf("error while init gctuner: %v", errNoConfiguratorSpecified)
-		return errNoConfiguratorSpecified
+		return nil, errNoConfiguratorSpecified
 	}
 
-	h := &adaptiveGCHandler{
+	ctx, cancel := context.WithCancel(context.Background())
+	return &adaptiveGCHandler{
 		configurator: o.configurator,
 		logger:       o.logger,
-		ch:           make(chan interface{}, 1),
-	}
-	h.Start()
-	return nil
+		hooks:        hooks,
+		ch:           make(chan struct{}, 1),
+		ctx:          ctx,
+		cancel:       cancel,
+	}, nil
 }
 
 type adaptiveGCHandler struct {
 	configurator Configurator
 	logger       Logger
+	hooks        runtimeHooks
 
 	prevConfig atomic.Value
-	ch         chan interface{}
+	ch         chan struct{}
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
-func (a *adaptiveGCHandler) Start() {
-	a.checkAndSetNextGCConfig()
-	a.installGCHook()
-	go a.handleConfigTask()
-	go a.withRecover(a.watchConfigUpdate)()
+func (a *adaptiveGCHandler) Start() error {
+	if err := a.applyConfigOnce(); err != nil {
+		a.cancel()
+		return err
+	}
+	if a.configurator.Updates() == nil {
+		return nil
+	}
+	a.wg.Add(2)
+	go func() {
+		defer a.wg.Done()
+		a.handleConfigTask()
+	}()
+	go func() {
+		defer a.wg.Done()
+		a.withRecover(a.watchConfigUpdate)()
+	}()
+	return nil
 }
 
-func (a *adaptiveGCHandler) installGCHook() {
-	var r = &ref{}
-	runtime.SetFinalizer(r, a.registerNextGCHook)
+func (a *adaptiveGCHandler) stop() {
+	a.cancel()
+	a.wg.Wait()
 }
 
-func (a *adaptiveGCHandler) checkAndSetNextGCConfig() {
+func (a *adaptiveGCHandler) applyConfigOnce() (retErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			stackStr := string(debug.Stack())
+			a.logger.Errorf("applyConfigOnce panic: %v, stack: %s", r, stackStr)
+			retErr = fmt.Errorf("gctuner: panic applying config: %v", r)
+		}
+	}()
+
 	newConfig, err := a.configurator.GetConfig()
 	if err != nil {
 		a.logger.Errorf("get gc config error: %v", err)
-		return
+		return err
 	}
 	if err = newConfig.CheckValid(); err != nil {
 		a.logger.Errorf("check gc config error: %v", err)
-		return
+		return err
 	}
 
 	oldConfig, _ := a.prevConfig.Load().(Config)
-	setGCParameter(oldConfig, newConfig, a.logger)
+	if err = setGCParameter(oldConfig, newConfig, a.logger, a.hooks); err != nil {
+		return err
+	}
 	a.prevConfig.Store(newConfig)
+	return nil
 }
 
 func (a *adaptiveGCHandler) watchConfigUpdate() {
@@ -159,24 +220,32 @@ func (a *adaptiveGCHandler) watchConfigUpdate() {
 	if configUpdateCh == nil {
 		return
 	}
-	for range configUpdateCh {
-		newVal, _ := a.configurator.GetConfig()
-		oldVal, _ := a.prevConfig.Load().(Config)
-		if reflect.DeepEqual(newVal, oldVal) {
-			// The config has no change
-			continue
-		}
-		// The config has been changed
+	for {
 		select {
-		case a.ch <- struct{}{}:
-		default:
+		case <-a.ctx.Done():
+			return
+		case _, ok := <-configUpdateCh:
+			if !ok {
+				return
+			}
+			// Always signal handleConfigTask without deduplicating against prevConfig here;
+			// setGCParameter performs authoritative deduplication on the single worker goroutine.
+			select {
+			case a.ch <- struct{}{}:
+			default:
+			}
 		}
 	}
 }
 
 func (a *adaptiveGCHandler) handleConfigTask() {
-	for range a.ch {
-		a.withRecover(a.checkAndSetNextGCConfig)()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-a.ch:
+			_ = a.applyConfigOnce()
+		}
 	}
 }
 
@@ -191,18 +260,6 @@ func (a *adaptiveGCHandler) withRecover(func0 func()) func() {
 		}()
 		func0()
 	}
-}
-
-func (a *adaptiveGCHandler) registerNextGCHook(f *ref) {
-	select {
-	case a.ch <- struct{}{}:
-	default:
-	}
-	runtime.SetFinalizer(f, a.registerNextGCHook) // Keep the object f alive for the next GC
-}
-
-type ref struct {
-	_ []byte
 }
 
 type stdLogger struct{}

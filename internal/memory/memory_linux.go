@@ -8,11 +8,11 @@ import (
 func sysTotalMemory() uint64 {
 	totalMem := memory.TotalMemory()
 	if totalMem == 0 {
-		panic("FATAL: cannot determine system memory")
+		return 0
 	}
 	mem := cgroup.GetMemoryLimit()
 	if mem <= 0 || int64(int(mem)) != mem || uint64(mem) > totalMem {
-		// Try reading hierarchical memory limit.
+		// Try reading cgroup v1 hierarchical memory limit.
 		// See https://github.com/VictoriaMetrics/VictoriaMetrics/issues/699
 		mem = cgroup.GetHierarchicalMemoryLimit()
 		if mem <= 0 || int64(int(mem)) != mem || uint64(mem) > totalMem {
@@ -24,6 +24,9 @@ func sysTotalMemory() uint64 {
 
 func sysFreeMemory() uint64 {
 	total := sysTotalMemory()
+	if total == 0 {
+		return 0
+	}
 	usage := cgroup.GetMemoryUsage()
 	if usage <= 0 || int64(int(usage)) != usage || uint64(usage) > total {
 		return memory.FreeMemory()
