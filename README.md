@@ -1,86 +1,72 @@
-# gogctuner: GC Tuner for Go Applications
+# gogctuner: Dynamic GC Tuner for Go Applications
 
-`gogctuner` is a Go library designed to automatically adjust the garbage collection (GC) parameters to optimize CPU
-usage based on the target memory usage percentage.
-
-## How it works
-
-- **Pre Go1.19 Versions**: Utilizes a tuning strategy inspired
-  by [Uber's article](https://www.uber.com/blog/how-we-saved-70k-cores-across-30-mission-critical-services/), which
-  adjusts the `GOGC` parameter based on the live heap size and target memory limit.
-- **Go1.19 and Later**: Takes advantage of
-  the [soft memory limit feature](https://github.com/golang/proposal/blob/master/design/48409-soft-memory-limit.md)
-  introduced in Go 1.19, offering more granular control over GC behavior.
+`gogctuner` is a lightweight Go library (Go 1.21+) that automatically configures Go's soft memory limit
+(`debug.SetMemoryLimit`) and `GOGC` (`debug.SetGCPercent`) based on a target percentage of container/host RAM, with
+support for **runtime dynamic configuration updates** (`Configurator`).
 
 ## Features
 
-- **Memory Usage Based Tuning**: Automatically adjusts GC parameters to maintain a specified percentage of memory usage.
-- **Cross-Version Compatibility**: Compatible with Go versions below 1.19 and leverages the `SetMemoryLimit` features in
-  Go 1.19 and above.
-- **cgroups Support**: Works seamlessly with both cgroups and cgroupsv2 for enhanced resource management.
-- **Cross-OS Compatibility**: Ensures functionality across multiple operating systems.
+- **Container-Aware Memory Limit**: Reads cgroup v2 (`memory.max` via `/proc/self/cgroup` + `/proc/self/mountinfo`
+  ancestor-chain minimum, matching `automemlimit` semantics) and cgroup v1 (`memory.limit_in_bytes` /
+  `hierarchical_memory_limit`), falling back to host RAM.
+- **Dynamic Hot Reload**: Plug in any config center via the `Configurator` interface (`GetConfig` + `Updates` channel)
+  to adjust `MaxRAMPercentage` or `GOGC` at runtime without restarting the service.
+- **Zero Per-GC Overhead**: Purely event-driven on Go 1.21+; no per-GC finalizer hooks.
+- **Cross-OS Compatibility**: Runs cleanly on Linux, macOS, and Windows.
+
+## Important Sizing Guidance
+
+> [!WARNING]
+> When `MaxRAMPercentage > 0` and `GOGC == 0` (the default "unset" sentinel), `gogctuner` sets `GOGC=-1` so GC is
+> governed solely by `GOMEMLIMIT`. Because container memory limits also include non-Go-heap memory (cgo allocations,
+> `mmap`, page cache, runtime metadata), setting `MaxRAMPercentage` close to `100` risks OOM kills. In production
+> containers, **80%–90%** (or lower for cgo-heavy workloads) is recommended.
+
+## `Config.GOGC` Semantics
+
+| `MaxRAMPercentage` | `GOGC` | Behavior |
+| --- | --- | --- |
+| `> 0` | `0` (unset) | Sets `GOMEMLIMIT = MaxRAMPercentage% * memLimit` and `GOGC = -1` |
+| `> 0` | `!= 0` | Sets both `GOMEMLIMIT` and `debug.SetGCPercent(GOGC)` |
+| `== 0` | `0` (unset) | Resets `GOMEMLIMIT` to `GOMEMLIMIT` env (or unlimited) and `GOGC` to `GOGC` env (or `100`) |
+| `== 0` | `< 0` / `> 0` | Sets `debug.SetGCPercent(GOGC)` directly |
 
 ## Usage
 
 ### Static Configuration
 
-Use static configuration by setting the `MaxRAMPercentage` at the initialization of your application:
-
 ```go
 package main
 
 import (
-  "github.com/fangwentong/gogctuner"
+	"log"
+
+	"github.com/fangwentong/gogctuner"
 )
 
 func main() {
-  gogctuner.EnableGCTuner(
-    gogctuner.WithStaticConfig(gogctuner.Config{MaxRAMPercentage: 90}),
-  )
-  // Your application code here
+	if err := gogctuner.EnableGCTuner(
+		gogctuner.WithStaticConfig(gogctuner.Config{MaxRAMPercentage: 80}),
+	); err != nil {
+		log.Fatalf("enable gctuner: %v", err)
+	}
 }
-
 ```
 
 ### Dynamic Configuration
 
-For dynamic configuration that allows runtime updates, you can use a configurator:
-
 ```go
-package main
+cfg := gogctuner.NewGcConfigurator()
+cfg.SetConfig(gogctuner.Config{MaxRAMPercentage: 80})
 
-import (
-  "github.com/fangwentong/gogctuner"
-)
-
-func main() {
-  configurator := gogctuner.NewGcConfigurator()
-
-  // Integrate with your dynamic config implementation here:
-  conf := readFromYourConfigCenter("your_config_key")
-  configurator.SetConfig(conf) // set initial config
-  // register config updates callback
-  registerConfigUpdateCallback("your_config_key", func(conf gogctuner.Config) {
-    configurator.SetConfig(conf)
-  })
-
-  gogctuner.EnableGCTuner(
-    gogctuner.WithConfigurator(configurator),
-  )
-  // Your application code here
+if err := gogctuner.EnableGCTuner(gogctuner.WithConfigurator(cfg)); err != nil {
+	log.Fatalf("enable gctuner: %v", err)
 }
 
+// Update at runtime from a config center watcher:
+cfg.SetConfig(gogctuner.Config{MaxRAMPercentage: 70})
 ```
 
-### Reference
+## License
 
-- Golang GC Guide: https://tip.golang.org/doc/gc-guide
-- How We Saved 70K Cores Across 30 Mission-Critical Services (Large-Scale, Semi-Automated Go GC Tuning
-  @Uber): https://www.uber.com/blog/how-we-saved-70k-cores-across-30-mission-critical-services/
-- https://github.com/cch123/gogctuner
-- https://github.com/VictoriaMetrics/VictoriaMetrics/tree/master/lib/cgroup
-
-### License
-
-This project is licensed under the MIT License, see the [LICENSE](LICENSE) file for details.
-
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
