@@ -9,6 +9,7 @@ import (
 
 // GetLiveDatasetSize returns the live dataset size in bytes which required by calculating GOGC
 // since go1.19,
+//
 //	gcPercentHeapGoal = c.heapMarked + (c.heapMarked+c.lastStackScan.Load()+c.globalsScan.Load())*uint64(gcPercent)/100
 //
 // use `/memory/classes/heap/objects:bytes` metric as the estimate of live heap size(heapMarked), and

@@ -19,6 +19,8 @@ const (
 )
 
 // setGCParameter sets GC parameters
+//
+//nolint:unused // called from !go1.19 build
 func adjustGOGCByMemoryLimit(oldConfig, newConfig Config, logger Logger) {
 	if newConfig.MaxRAMPercentage > 0 {
 		// If MaxRAMPercentage is set, adjust GOGC based on the current heap size and the target memory limit
@@ -62,6 +64,7 @@ func readGOGC() int {
 	return 100
 }
 
+//nolint:unused // called from !go1.19 build
 func getCurrentPercentAndChangeGOGC(memoryLimitInPercent float64, maxGOGC float64, logger Logger) {
 	totalMemSize, err := getMemoryLimit()
 	if err != nil {
